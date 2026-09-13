@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: procureguard
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: procureguard_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # NOTE: Backend and frontend can be run via this docker-compose or locally using python/npm.
+  # For development, we run them locally to easily see logs and restart.
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - postgres
+      - redis
+      - minio
+  
+  rq-worker:
+    build: ./backend
+    command: python worker.py
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - redis
+      - postgres
+
+volumes:
+  postgres_data:
+  minio_data:

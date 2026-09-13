@@ -1,0 +1,118 @@
+from pydantic import BaseModel
+from typing import List, Optional
+
+# ── Document ──────────────────────────────────────────────────────────
+
+class DocumentResponse(BaseModel):
+    id: str
+    filename: str
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    hash_sha3_512: Optional[str] = None
+    minio_path: Optional[str] = None
+    status: str
+    processing_stage: Optional[str] = None
+    page_count: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+class PageImageResponse(BaseModel):
+    id: str
+    page_number: int
+    minio_path: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+# ── Rule Result ───────────────────────────────────────────────────────
+
+class RuleResultResponse(BaseModel):
+    id: str
+    rule_id: str
+    rule_name: str
+    description: Optional[str] = None
+    extracted_value: Optional[str] = None
+    expected_value: Optional[str] = None
+    result: str
+    confidence: Optional[float] = None
+    evidence: Optional[str] = None
+    document_name: Optional[str] = None
+    document_id: Optional[str] = None
+    page: Optional[int] = None
+    bounding_box: Optional[list] = None
+    source: Optional[str] = None
+    timestamp: Optional[str] = None
+    model_version: Optional[str] = None
+    rule_version: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+# ── Bid ───────────────────────────────────────────────────────────────
+
+class BidResponse(BaseModel):
+    id: str
+    tender_id: str
+    bidder_name: str
+    gstin: Optional[str] = None
+    score: int
+    risk: str
+    status: str
+    failed_rules: int
+    review_rules: int
+    summary: Optional[str] = None
+    reviewer_decision: Optional[str] = None
+    reviewer_note: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+    documents: List[DocumentResponse] = []
+    rules: List[RuleResultResponse] = []
+
+    class Config:
+        from_attributes = True
+
+# ── Tender ────────────────────────────────────────────────────────────
+
+class TenderCreate(BaseModel):
+    title: str
+    department: str
+    deadline: str
+    budget: str
+
+class TenderResponse(BaseModel):
+    id: str
+    title: str
+    department: str
+    published: str
+    deadline: str
+    budget: str
+    status: str
+    bids: List[BidResponse] = []
+
+    class Config:
+        from_attributes = True
+
+# ── Audit ─────────────────────────────────────────────────────────────
+
+class AuditEventResponse(BaseModel):
+    id: str
+    time: str
+    actor: str
+    action: str
+    document: Optional[str] = None
+    rule: Optional[str] = None
+    result: Optional[str] = None
+    source: Optional[str] = None
+    hash: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+# ── Officer Decision ─────────────────────────────────────────────────
+
+class DecisionRequest(BaseModel):
+    decision: str   # Approve / Reject / Request Clarification / Keep Under Review
+    note: Optional[str] = None
