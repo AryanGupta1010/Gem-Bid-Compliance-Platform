@@ -38,7 +38,3 @@ class PDFRenderer:
         doc.close()
         return results
 
-    # Legacy compat
-    def render_document(self, document_id: str, pdf_bytes: bytes) -> list:
-        records = self.render_document_with_metadata(document_id, pdf_bytes)
-        return [r["minio_path"] for r in records]

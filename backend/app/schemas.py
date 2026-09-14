@@ -1,5 +1,6 @@
-from pydantic import BaseModel
-from typing import List, Optional
+from datetime import date
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Literal
 
 # ── Document ──────────────────────────────────────────────────────────
 
@@ -77,10 +78,30 @@ class BidResponse(BaseModel):
 # ── Tender ────────────────────────────────────────────────────────────
 
 class TenderCreate(BaseModel):
-    title: str
-    department: str
+    title: str = Field(min_length=1, max_length=250)
+    department: str = Field(min_length=1, max_length=250)
     deadline: str
-    budget: str
+    budget: str = Field(min_length=1, max_length=100)
+
+    @field_validator("title", "department", "budget", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("deadline")
+    @classmethod
+    def valid_date(cls, value):
+        return date.fromisoformat(value).isoformat()
+
+class BidCreate(BaseModel):
+    tender_id: str = Field(min_length=1)
+    bidder_name: str = Field(min_length=1, max_length=250)
+    gstin: Optional[str] = Field(default=None, max_length=15)
+
+    @field_validator("bidder_name", mode="before")
+    @classmethod
+    def strip_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 class TenderResponse(BaseModel):
     id: str
@@ -114,5 +135,10 @@ class AuditEventResponse(BaseModel):
 # ── Officer Decision ─────────────────────────────────────────────────
 
 class DecisionRequest(BaseModel):
-    decision: str   # Approve / Reject / Request Clarification / Keep Under Review
-    note: Optional[str] = None
+    decision: Literal["Approve", "Reject", "Request Clarification", "Keep Under Review"]
+    note: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def strip_note(cls, value):
+        return value.strip() if isinstance(value, str) else value

@@ -27,7 +27,7 @@ def wait_for_processing(bid_id, doc_id, timeout=60):
         latest = next((d for d in docs if d.get("document_id") == doc_id), None)
         if latest:
             stage = latest.get("processing_stage")
-            if stage in ("EVALUATED", "FAILED", "COMPLETED", "HUMAN_REVIEW"):
+            if stage in ("EVALUATED", "FAILED", "COMPLETED", "HUMAN_REVIEW", "ERROR"):
                 # Also trigger a manual verify just to be absolutely sure the engine runs
                 # But task queue runs it automatically, so let's check rules_count
                 return data

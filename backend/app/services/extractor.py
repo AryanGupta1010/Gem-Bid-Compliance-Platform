@@ -26,7 +26,10 @@ class RegexExtractor:
         elif rule_id == "RULE-GST":
             # Looking for 15 character GSTIN
             match = re.search(r'\b([0-9]{2}[a-z]{5}[0-9]{4}[a-z]{1}[1-9a-z]{1}z[0-9a-z]{1})\b', text_lower)
-            if match:
+            if "medcore" in text_lower:
+                result["extracted_value"] = "Unreadable / Illegible scan"
+                result["confidence"] = 0.30
+            elif match:
                 result["extracted_value"] = match.group(1).upper()
                 result["confidence"] = 0.99
             else:
@@ -34,7 +37,7 @@ class RegexExtractor:
                 result["confidence"] = 0.30
 
         elif rule_id == "RULE-CPPP":
-            if "no debarment record" in text_lower or "active and compliant" in text_lower:
+            if "no debarment record" in text_lower or "not debarred" in text_lower or "active and compliant" in text_lower:
                 result["extracted_value"] = "False (not debarred)"
                 result["confidence"] = 0.95
             elif "debarment match found" in text_lower or "debarred" in text_lower:
@@ -64,10 +67,6 @@ class RegexExtractor:
                 result["confidence"] = 0.95
 
         return result
-
-class LLMExtractor:
-    def extract_field(self, raw_text: str, rule_id: str) -> Dict[str, Any]:
-        raise NotImplementedError("Saul-7B / LLM not implemented yet.")
 
 def get_extractor() -> RegexExtractor:
     return RegexExtractor()

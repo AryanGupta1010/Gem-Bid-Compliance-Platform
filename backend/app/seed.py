@@ -66,16 +66,12 @@ def seed_db():
                 status=b["status"],
                 failed_rules=0,
                 review_rules=0,
-                summary=b["summary"]
+                summary="DEMO preset only — upload the Golden Demo PDF to produce evidence-backed rule results."
             )
             db.add(bid)
         else:
             bid.bidder_name = b["name"]
-            # To ensure the demo looks right, set their intended states if they haven't been fully run
-            # Or perhaps just updating the name is enough. I will update the states to be sure they match the prompt.
-            bid.status = b["status"]
-            bid.risk = b["risk"]
-            bid.score = b["score"]
+            # Never overwrite evaluated outcomes or officer decisions on reseed.
 
     db.commit()
     db.close()

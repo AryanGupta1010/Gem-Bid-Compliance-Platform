@@ -7,12 +7,6 @@ from app.database import Base
 def generate_uuid():
     return str(uuid.uuid4())
 
-# ── Pipeline stage constants ──────────────────────────────────────────
-PIPELINE_STAGES = [
-    "UPLOAD", "HASH", "RENDER", "RETRIEVE", "OCR",
-    "VERIFY", "EVALUATE", "AGGREGATE", "HUMAN_REVIEW"
-]
-
 class Tender(Base):
     __tablename__ = "tenders"
 
@@ -45,8 +39,8 @@ class Bid(Base):
     reviewed_at = Column(String)
 
     tender = relationship("Tender", back_populates="bids")
-    documents = relationship("Document", back_populates="bid")
-    rules = relationship("RuleResult", back_populates="bid")
+    documents = relationship("Document", back_populates="bid", order_by="Document.uploaded_at.desc()")
+    rules = relationship("RuleResult", back_populates="bid", order_by="RuleResult.rule_id")
 
 class Document(Base):
     __tablename__ = "documents"

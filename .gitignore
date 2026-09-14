@@ -1,61 +1,81 @@
-# Next.js / Node
-node_modules/
-.next/
-out/
-build/
-.DS_Store
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnp
-.pnp.js
-
-# Python / FastAPI
+# Python / Backend
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+backend/venv/
+backend/env/
+backend/build/
+backend/develop-eggs/
+backend/dist/
+backend/downloads/
+backend/eggs/
+backend/.eggs/
+backend/lib/
+backend/lib64/
+backend/parts/
+backend/sdist/
+backend/var/
+backend/wheels/
+backend/share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-.pytest_cache/
-.coverage
-htmlcov/
-venv/
-env/
-ENV/
-env.bak/
-venv.bak/
+MANIFEST
 
-# Secrets
+# Environment Variables
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
-*.pem
 
-# Data & Uploads
-backend/uploads/
-backend/demo_documents/
+# Next.js / Frontend
+frontend/node_modules/
+frontend/.pnp
+frontend/.pnp.js
+frontend/coverage/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Uploaded/Generated Documents
+backend/demo_documents/*
+!backend/demo_documents/.gitkeep
+!backend/demo_documents/*.pdf
+backend/test_doc.txt
+backend/downloads/
+
+# Astra Diff Files (if any)
+clean_backend_diff.txt
+clean_frontend_diff.txt
+backend_diff.txt
+frontend_diff.txt
 sih_doc_extracted.txt
-
-# OS
-Thumbs.db
-
-# Documentation and Project Files
-GeM_Bid_Compliance_SIH26100_Implementation_Documentation_Short_ResearchSources.docx
 PROJECT STRUCTURE.txt
+sih-26-procureguard-ASTRA/

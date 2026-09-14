@@ -6,6 +6,7 @@ Principle: AI finds and explains evidence.
            The Procurement Officer makes the final decision.
 """
 import re
+import math
 import uuid
 from typing import Optional
 from datetime import datetime, timezone
@@ -19,34 +20,34 @@ from app.services.extractor import get_extractor
 # ── Value Parsers ─────────────────────────────────────────────────────
 
 def parse_turnover_crore(raw: str) -> Optional[float]:
-    """Parse '₹14.2 Crore' → 14.2. Returns None on failure."""
+    """Return crore units; ambiguous, negative and non-finite input is unavailable."""
     if not raw:
         return None
-    cleaned = raw.replace("₹", "").replace(",", "").strip()
-    match = re.search(r"([\d.]+)\s*[Cc]r(?:ore|ores)?", cleaned)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return None
-    # Try plain number
-    try:
-        return float(cleaned)
-    except ValueError:
+    cleaned = raw.strip().replace(",", "")
+    match = re.fullmatch(r"(?:₹|INR|Rs\.?)?\s*(-?\d+(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?)?", cleaned, re.I)
+    if not match:
         return None
+    value = float(match.group(1))
+    unit = (match.group(2) or "").lower()
+    if not math.isfinite(value) or value < 0:
+        return None
+    if unit.startswith(("lakh", "lac")):
+        value /= 100
+    elif not unit and re.match(r"^(?:₹|INR|Rs\.?)", raw.strip(), re.I):
+        value /= 10000000
+    elif not unit and "," in raw:
+        return None
+    return value
 
 
 def parse_percentage(raw: str) -> Optional[float]:
-    """Parse '62%' → 62.0. Returns None on failure."""
     if not raw:
         return None
-    match = re.search(r"([\d.]+)\s*%", raw)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return None
-    return None
+    match = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*%\s*", raw)
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value if math.isfinite(value) and 0 <= value <= 100 else None
 
 
 # ── Engine ────────────────────────────────────────────────────────────
@@ -112,9 +113,9 @@ class DeterministicEngine:
 
         gst_result = "PASS"
         gst_extracted = gst_res.get("status", "UNKNOWN")
-        if gst_res.get("status") == "SUSPENDED" or gst_res.get("status") == "NOT_FOUND":
+        if gst_res.get("status") in {"SUSPENDED", "NOT_FOUND"} and gst_res.get("response_code") in {200, 404}:
             gst_result = "FAIL"
-        elif gst_res.get("status") == "UNAVAILABLE" or gst_res.get("response_code") != 200:
+        elif gst_res.get("status") != "ACTIVE" or gst_res.get("response_code") != 200:
             gst_result = "REVIEW"  # UNAVAILABLE → REVIEW
         elif ext_gst["confidence"] < 0.6:
             gst_result = "REVIEW"  # Extraction low confidence
@@ -146,8 +147,10 @@ class DeterministicEngine:
         cppp_result = "PASS"
         if ext_cppp.get("extracted_value") == "True (debarred)":
             cppp_result = "FAIL"
-        elif cppp_res.get("debarred"):
+        elif cppp_res.get("debarred") is True and cppp_res.get("response_code") == 200:
             cppp_result = "FAIL"
+        elif cppp_res.get("status") == "UNAVAILABLE" or cppp_res.get("response_code") != 200:
+            cppp_result = "REVIEW"
         elif ext_cppp["confidence"] < 0.5:
             cppp_result = "REVIEW"
 
@@ -201,10 +204,25 @@ class DeterministicEngine:
 
         oem_result = "PASS"
         oem_val = ext_oem.get("extracted_value") or ""
-        if "mismatch" in oem_val.lower() or "missing" in oem_val.lower():
-            oem_result = "FAIL"
-        elif ext_oem["confidence"] < 0.7:
+        if ext_oem["confidence"] < 0.7:
             oem_result = "REVIEW"
+        elif "mismatch" in oem_val.lower() or "missing" in oem_val.lower():
+            oem_result = "FAIL"
+        else:
+            recipient = re.search(r"authorize\s+(.+?)\s+to\s+(?:supply|support)", ext_oem.get("source_text", ""), re.I)
+            def normalize(name):
+                # Take only the first significant word (e.g. "TechNova" or "Apex") for basic matching
+                cleaned = re.sub(r"[^a-z0-9\s]", "", name.casefold()).strip()
+                return cleaned.split()[0] if cleaned else ""
+
+            if not recipient:
+                oem_result = "REVIEW"
+                oem_val = "Authorization recipient could not be verified"
+            elif normalize(recipient.group(1)) != normalize(bid.bidder_name):
+                oem_result = "FAIL"
+                oem_val = f"Authorization recipient mismatch: {recipient.group(1)} vs {bid.bidder_name}"
+            else:
+                oem_val = f"Authorization recipient: {recipient.group(1)}"
 
         rules_run.append(self._make_rule(
             bid=bid, doc=doc, rule_id="RULE-OEM",
@@ -220,14 +238,9 @@ class DeterministicEngine:
             model=ret_oem["model"]
         ))
 
-        # ── Commit rules (upsert) ────────────────────────────────────
+        # Replace current package results atomically; audit retains past outcomes.
+        self.db.query(models.RuleResult).filter(models.RuleResult.bid_id == bid.id).delete(synchronize_session=False)
         for r in rules_run:
-            old_r = self.db.query(models.RuleResult).filter(
-                models.RuleResult.bid_id == bid.id,
-                models.RuleResult.rule_id == r.rule_id
-            ).first()
-            if old_r:
-                self.db.delete(old_r)
             self.db.add(r)
 
             self.db.add(models.AuditEvent(
@@ -238,7 +251,7 @@ class DeterministicEngine:
                 hash=doc.hash_sha3_512,
                 rule=r.rule_name,
                 result=r.result,
-                source=r.source
+                source=f"bid:{bid.id}"
             ))
 
         # ── Aggregate ────────────────────────────────────────────────
@@ -263,27 +276,12 @@ class DeterministicEngine:
         bid.score = score
         bid.failed_rules = failed
         bid.review_rules = review
+        bid.reviewer_decision = bid.reviewer_note = bid.reviewed_at = None
 
         self.db.commit()
         return bid
 
-    def process_bid(self, bid_id: str):
-        """Evaluate all uploaded documents for a bid."""
-        bid = self.db.query(models.Bid).filter(models.Bid.id == bid_id).first()
-        if not bid:
-            return None
 
-        # Find latest document
-        doc = self.db.query(models.Document).filter(
-            models.Document.bid_id == bid_id
-        ).order_by(models.Document.uploaded_at.desc()).first()
-
-        if doc:
-            return self.evaluate_document_evidence(doc.id)
-
-        # No documents — everything is REVIEW
-        bid.status = "REVIEW"
-        bid.risk = "MEDIUM"
         bid.score = 0
         bid.summary = "No documents uploaded yet."
         self.db.commit()
