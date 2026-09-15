@@ -38,10 +38,26 @@ BID_LOAD = (selectinload(models.Bid.documents), selectinload(models.Bid.rules))
 TENDER_LOAD = (selectinload(models.Tender.bids).selectinload(models.Bid.documents),
                selectinload(models.Tender.bids).selectinload(models.Bid.rules))
 
+def _run_db_migrations():
+    """Ensure missing columns on existing PostgreSQL tables are dynamically updated."""
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS tender_id VARCHAR REFERENCES tenders(id);"))
+            # Add dynamic tender details
+            conn.execute(text("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS tender_number VARCHAR;"))
+            conn.execute(text("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS quantity VARCHAR;"))
+            conn.execute(text("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS delivery_period VARCHAR;"))
+            conn.execute(text("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS warranty VARCHAR;"))
+            conn.execute(text("ALTER TABLE tenders ADD COLUMN IF NOT EXISTS emd VARCHAR;"))
+    except Exception as e:
+        logger.warning("Auto migration check: %s", e)
+
 @asynccontextmanager
 async def lifespan(app):
     try:
         Base.metadata.create_all(bind=engine)
+        _run_db_migrations()
         _ensure_default_user()
     except SQLAlchemyError:
         logger.exception("Database initialization failed")
@@ -237,6 +253,59 @@ def upload_document(bid_id: str, file: UploadFile = File(...), db: Session = Dep
         raise HTTPException(503, "PDF stored, but queue submission failed. Upload again after Redis recovers.") from exc
     return doc
 
+@app.post("/upload/tender/{tender_id}", response_model=schemas.DocumentResponse)
+def upload_tender_document(tender_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    tender = db.query(models.Tender).filter(models.Tender.id == tender_id).with_for_update().first()
+    if not tender:
+        raise HTTPException(404, "Tender not found")
+    if db.query(models.Document).filter(models.Document.tender_id == tender_id,
+            models.Document.status.in_(["uploaded", "processing"])).first():
+        raise HTTPException(409, "A document is already processing for this tender.")
+    contents = file.file.read(50 * 1024 * 1024 + 1)
+    if len(contents) > 50 * 1024 * 1024:
+        raise HTTPException(413, "PDF exceeds the 50 MB limit")
+    filename = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if not filename.lower().endswith(".pdf") or not contents.startswith(b"%PDF-"):
+        raise HTTPException(422, "Select a valid PDF document")
+    try:
+        with pymupdf.open(stream=contents, filetype="pdf") as pdf:
+            if pdf.needs_pass or pdf.page_count == 0 or pdf.page_count > 200 or pdf.is_repaired:
+                raise ValueError("Encrypted, damaged, empty or oversized PDF")
+            for page in pdf:
+                if page.rect.width <= 0 or page.rect.height <= 0 or max(page.rect.width, page.rect.height) > 14400:
+                    raise ValueError("Unsupported page dimensions")
+                page.get_text()
+    except Exception as exc:
+        raise HTTPException(422, "PDF is corrupt, encrypted, empty, or exceeds 200 pages.") from exc
+    digest = hashlib.sha3_512(contents).hexdigest()
+    try:
+        if redis_conn:
+            redis_conn.ping()
+        path = minio_client.upload_fileobj(io.BytesIO(contents), f"tender_{tender_id}/{uuid.uuid4().hex}.pdf")
+    except Exception as exc:
+        logger.exception("Upload dependency unavailable")
+        raise HTTPException(503, "Storage or queue unavailable. Retry later.") from exc
+    doc = models.Document(tender_id=tender_id, filename=filename, mime_type="application/pdf",
+                          size_bytes=len(contents), hash_sha3_512=digest, minio_path=path,
+                          status="uploaded", processing_stage="UPLOAD")
+    db.add(doc)
+    db.add(models.AuditEvent(time=datetime.now(timezone.utc).isoformat(), actor="System (Ingestion)",
+           action="Tender Document Uploaded & SHA-3-512 Sealed", document=filename, hash=digest,
+           result="SUCCESS", source=f"tender:{tender_id}"))
+    db.commit()
+    db.refresh(doc)
+    try:
+        if task_queue:
+            task_queue.enqueue("app.tasks.process_tender_pipeline", doc.id, job_timeout=900)
+    except Exception as exc:
+        doc.status, doc.processing_stage = "error", "FAILED"
+        db.add(models.AuditEvent(time=datetime.now(timezone.utc).isoformat(), actor="System (Queue)",
+               action="Processing queue unavailable", document=filename, hash=digest,
+               result="UNAVAILABLE", source=f"tender:{tender_id}"))
+        db.commit()
+        raise HTTPException(503, "PDF stored, but queue submission failed. Upload again after Redis recovers.") from exc
+    return doc
+
 # ═══════════════════════════════════════════════════════════════════════
 # TENDER & BID CRUD
 # ═══════════════════════════════════════════════════════════════════════
@@ -260,6 +329,35 @@ def get_tender(tender_id: str, db: Session = Depends(get_db)):
     if not tender:
         raise HTTPException(404, "Tender not found")
     return tender
+
+@app.delete("/tenders/{tender_id:path}")
+def delete_tender(tender_id: str, db: Session = Depends(get_db)):
+    tender = db.query(models.Tender).filter(models.Tender.id == tender_id).first()
+    if not tender:
+        raise HTTPException(404, "Tender not found")
+    
+    bids = db.query(models.Bid).filter(models.Bid.tender_id == tender_id).all()
+    bid_ids = [b.id for b in bids]
+
+    # Find all document IDs associated with this tender or any of its bids
+    docs = db.query(models.Document).filter(
+        (models.Document.tender_id == tender_id) | (models.Document.bid_id.in_(bid_ids))
+    ).all() if bid_ids else db.query(models.Document).filter(models.Document.tender_id == tender_id).all()
+    doc_ids = [d.id for d in docs]
+
+    if doc_ids:
+        db.query(models.PageImage).filter(models.PageImage.document_id.in_(doc_ids)).delete(synchronize_session=False)
+
+    if bid_ids:
+        db.query(models.RuleResult).filter(models.RuleResult.bid_id.in_(bid_ids)).delete(synchronize_session=False)
+        db.query(models.Document).filter(models.Document.bid_id.in_(bid_ids)).delete(synchronize_session=False)
+        db.query(models.Bid).filter(models.Bid.id.in_(bid_ids)).delete(synchronize_session=False)
+        
+    db.query(models.Document).filter(models.Document.tender_id == tender_id).delete(synchronize_session=False)
+    db.query(models.TenderRequirement).filter(models.TenderRequirement.tender_id == tender_id).delete(synchronize_session=False)
+    db.delete(tender)
+    db.commit()
+    return {"status": "success", "message": f"Tender {tender_id} deleted successfully"}
 
 @app.post("/bids", response_model=schemas.BidResponse)
 def create_bid(data: schemas.BidCreate, db: Session = Depends(get_db)):

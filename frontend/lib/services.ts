@@ -12,14 +12,15 @@ const base = () => {
 
 export const apiUrl = (path: string) => `${base()}${path}`;
 
-const getToken = () => {
+const getToken = async () => {
   if (typeof window !== "undefined") {
     const m = document.cookie.match(/(^| )token=([^;]+)/);
     return m ? m[2] : null;
   }
   try {
     const { cookies } = require("next/headers");
-    return cookies().get("token")?.value || null;
+    const cookieStore = await cookies();
+    return cookieStore.get("token")?.value || null;
   } catch (e) {
     return null;
   }
@@ -30,7 +31,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const timer = setTimeout(() => controller.abort(), 60000);
   
   const headers = new Headers(init.headers || {});
-  const token = getToken();
+  const token = await getToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
@@ -73,6 +74,7 @@ export const services = {
   login: (credentials: LoginCredentials) => request<AuthResponse>("/auth/login", json(credentials)),
   getAllTenders: () => request<Tender[]>("/tenders"),
   getTender: (id: string) => optional<Tender>(`/tenders/${encodeURIComponent(id)}`),
+  deleteTender: (id: string) => request<{ status: string }>(`/tenders/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createTender: (data: TenderCreate) => request<Tender>("/tenders", json(data)),
   createBid: (tenderId: string, bidder_name: string, gstin: string) => request<Bidder>("/bids", json({ tender_id: tenderId, bidder_name, gstin: gstin || null })),
   getAllBids: () => request<Bidder[]>("/bids"),
@@ -87,5 +89,12 @@ export const services = {
     }
     const body = new FormData(); body.append("file", file);
     return request<DocumentRecord>(`/upload/${encodeURIComponent(id)}`, { method: "POST", body });
+  },
+  uploadTenderDocument: async (id: string, file: File) => {
+    if (!file.name.toLowerCase().endsWith(".pdf") || file.size === 0 || file.size > 50 * 1024 * 1024) {
+      throw new Error("Select a non-empty PDF no larger than 50 MB.");
+    }
+    const body = new FormData(); body.append("file", file);
+    return request<DocumentRecord>(`/upload/tender/${encodeURIComponent(id)}`, { method: "POST", body });
   },
 };

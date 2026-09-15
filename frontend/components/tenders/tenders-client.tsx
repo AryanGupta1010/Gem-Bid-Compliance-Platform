@@ -2,18 +2,41 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Search, Download } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowRight, Search, Download, Trash2 } from "lucide-react";
 import { Tender } from "@/lib/types";
 import { exportToCSV } from "@/lib/export";
+import { services } from "@/lib/services";
 
 interface TendersClientProps {
   tenders: Tender[];
 }
 
-export function TendersClient({ tenders }: TendersClientProps) {
+export function TendersClient({ tenders: initialTenders }: TendersClientProps) {
+  const router = useRouter();
+  const [tenders, setTenders] = useState<Tender[]>(initialTenders);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
+
+  const handleDeleteTender = async (e: React.MouseEvent, id: string, title: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm(`Are you sure you want to delete tender "${title}" (${id})? All associated bids and documents will also be permanently deleted.`)) {
+      return;
+    }
+    setDeletingId(id);
+    try {
+      await services.deleteTender(id);
+      setTenders(prev => prev.filter(t => t.id !== id));
+      router.refresh();
+    } catch (err: any) {
+      alert(err?.message || "Failed to delete tender.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const departments = Array.from(new Set(tenders.map(t => t.department)));
 
@@ -122,10 +145,20 @@ export function TendersClient({ tenders }: TendersClientProps) {
                     {item.status}
                   </span>
                 </td>
-                <td>
-                  <Link href={`/tenders/${encodeURIComponent(item.id)}`} className="text-teal">
-                    <ArrowRight size={17} />
-                  </Link>
+                <td className="text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      onClick={(e) => handleDeleteTender(e, item.id, item.title)}
+                      disabled={deletingId === item.id}
+                      title="Delete Tender"
+                      className="p-1 text-slate-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                    <Link href={`/tenders/${encodeURIComponent(item.id)}`} className="text-teal hover:text-teal/80">
+                      <ArrowRight size={17} />
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}

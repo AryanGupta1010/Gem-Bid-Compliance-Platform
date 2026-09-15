@@ -37,10 +37,23 @@ class TenderRequirement(BaseModel):
     mandatory: bool = True
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "HIGH"
     description: str
+    source_page: Optional[int] = None
+    source_text: Optional[str] = None
+
+class TenderPage(BaseModel):
+    page_number: int
+    text: str
 
 class ExtractionRequest(BaseModel):
     tender_id: str
-    tender_text: str
+    tender_pages: List[TenderPage]
+    
+class TenderDetails(BaseModel):
+    tender_number: Optional[str] = None
+    quantity: Optional[str] = None
+    delivery_period: Optional[str] = None
+    warranty: Optional[str] = None
+    emd: Optional[str] = None
 
 class ExtractionResponse(BaseModel):
     tender_id: str
@@ -48,6 +61,7 @@ class ExtractionResponse(BaseModel):
     model_version: str
     inference_timestamp: str
     requirements: List[TenderRequirement]
+    tender_details: TenderDetails = Field(default_factory=TenderDetails)
 
 @app.get("/")
 def root():
@@ -70,137 +84,232 @@ def health():
 
 @app.post("/extract-requirements", response_model=ExtractionResponse)
 def extract_requirements(payload: ExtractionRequest):
-    text = payload.tender_text.lower()
     reqs: List[TenderRequirement] = []
+    details = TenderDetails()
 
-    # 1. Turnover Requirement (Dynamically parsed from tender text or estimated as 30-50% of budget)
-    turnover_match = re.search(r'(?:turnover|annual turnover)[^\d]*(\d+(?:\.\d+)?)\s*(?:cr|crore|lakh|lac)?', text)
-    if turnover_match:
-        turnover_threshold = float(turnover_match.group(1))
-        if "lakh" in text or "lac" in text:
-            turnover_threshold /= 100.0
-    else:
-        # Check budget in text
-        budget_match = re.search(r'(?:budget|inr|rs\.?)[^\d]*(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cr|crore|lakh|lac)?', text)
-        if budget_match:
-            raw_b = budget_match.group(1).replace(",", "")
-            try:
-                b_val = float(raw_b)
-                if "cr" in text or "crore" in text or b_val > 100:
-                    turnover_threshold = round(max(2.0, (b_val if b_val <= 100 else b_val / 10000000.0) * 0.4), 1)
-                elif "lakh" in text or "lac" in text:
-                    turnover_threshold = round(max(0.5, (b_val / 100.0) * 0.4), 2)
-                else:
-                    turnover_threshold = round(max(2.0, (b_val / 10000000.0) * 0.4), 1)
-            except ValueError:
-                turnover_threshold = 10.0
-        else:
-            turnover_threshold = 10.0
+    for page in payload.tender_pages:
+        text = page.text
+        lower_text = text.lower()
+        
+        # 1. Tender Number
+        if not details.tender_number:
+            m = re.search(r'(?:tender no|nit no|enquiry no)[\.\:]?\s*([a-zA-Z0-9\-\/]+)', text, re.I)
+            if m: details.tender_number = m.group(1).strip()
+            
+        # 2. Quantity
+        if not details.quantity:
+            m = re.search(r'(?:quantity|qty)[\.\:]?\s*(\d+\s*(?:nos|pcs|units|kg|tons?|set)?)', text, re.I)
+            if m: details.quantity = m.group(1).strip()
+            
+        # 3. Delivery Period
+        if not details.delivery_period:
+            m = re.search(r'(?:delivery period|delivery schedule)[\.\:]?\s*([^\n\.]+)', text, re.I)
+            if m: details.delivery_period = m.group(1).strip()
+            
+        # 4. Warranty
+        if not details.warranty:
+            m = re.search(r'(?:warranty|guarantee)[\.\:]?\s*([^\n\.]+)', text, re.I)
+            if m: details.warranty = m.group(1).strip()
+            
+        # 5. EMD
+        if not details.emd:
+            m = re.search(r'(?:emd|earnest money)[\.\:]?\s*(inr|rs\.?)?\s*([\d\,\.]+)', text, re.I)
+            if m: details.emd = f"INR {m.group(2).strip()}"
 
-    reqs.append(TenderRequirement(
-        rule_id="RULE-TURNOVER",
-        name="Minimum Average Annual Turnover",
-        rule_type="NUMERIC",
-        field="turnover",
-        operator="GTE",
-        expected_value=str(turnover_threshold),
-        unit="CRORE_INR",
-        period="LAST_3_FINANCIAL_YEARS",
-        evidence_type="AUDITED_FINANCIAL_STATEMENT",
-        mandatory=True,
-        severity="HIGH",
-        description=f"Average annual turnover must be at least ₹{turnover_threshold} Crore across audited financial years."
-    ))
+        # Dynamic requirements (simulating LLM behavior: ONLY extract if explicitly present)
+        # Turnover
+        turnover_match = re.search(r'([^\.\n]*?(?:turnover|annual turnover)[^\.\n]*?(\d+(?:\.\d+)?)\s*(?:cr|crore|lakh|lac|millions?)[^\.\n]*)', text, re.I)
+        if turnover_match:
+            source = turnover_match.group(1).strip()
+            val = turnover_match.group(2)
+            if not any(r.rule_id == "RULE-TURNOVER" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-TURNOVER",
+                    name="Minimum Average Annual Turnover",
+                    rule_type="NUMERIC",
+                    field="turnover",
+                    operator="GTE",
+                    expected_value=f"{val} Crore" if "cr" in source.lower() else f"{val} Lakh",
+                    unit="INR",
+                    evidence_type="AUDITED_FINANCIAL_STATEMENT",
+                    mandatory=True,
+                    severity="HIGH",
+                    description="Turnover requirement found in text.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
 
-    # 2. GST Registration
-    reqs.append(TenderRequirement(
-        rule_id="RULE-GST",
-        name="Active GST Registration",
-        rule_type="STATUS",
-        field="gstin_status",
-        operator="VALID",
-        expected_value="ACTIVE",
-        unit=None,
-        period=None,
-        evidence_type="GST_CERTIFICATE",
-        mandatory=True,
-        severity="CRITICAL",
-        description="Bidder must maintain an active, non-suspended GSTIN verified via official registry."
-    ))
+        # Local Content
+        lc_match = re.search(r'([^\.\n]*?(?:local content|make in india)[^\.\n]*?(\d+(?:\.\d+)?)\s*%[^\.\n]*)', text, re.I)
+        if lc_match:
+            source = lc_match.group(1).strip()
+            val = lc_match.group(2)
+            if not any(r.rule_id == "RULE-LOCAL-CONTENT" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-LOCAL-CONTENT",
+                    name="Local Content Threshold (MII)",
+                    rule_type="PERCENTAGE",
+                    field="local_content_percentage",
+                    operator="GTE",
+                    expected_value=f"{val}%",
+                    unit="PERCENT",
+                    evidence_type="LOCAL_CONTENT_DECLARATION",
+                    mandatory=True,
+                    severity="HIGH",
+                    description=f"Local content requirement.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
 
-    # 3. CPPP Debarment / Blacklisting Check
-    reqs.append(TenderRequirement(
-        rule_id="RULE-CPPP",
-        name="CPPP Debarment Verification",
-        rule_type="STATUS",
-        field="debarred",
-        operator="EQ",
-        expected_value="False",
-        unit=None,
-        period=None,
-        evidence_type="CPPP_PORTAL_RECORD",
-        mandatory=True,
-        severity="CRITICAL",
-        description="Bidder must not be debarred or suspended from public procurement under GeM/CPPP guidelines."
-    ))
+        # GST
+        gst_match = re.search(r'([^\.\n]*?(?:gst registration|gstin|gst certificate)[^\.\n]*?(?:active|mandatory|required|submitted)[^\.\n]*)', text, re.I)
+        if gst_match:
+            source = gst_match.group(1).strip()
+            if not any(r.rule_id == "RULE-GST" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-GST",
+                    name="Active GST Registration",
+                    rule_type="STATUS",
+                    field="gstin_status",
+                    operator="VALID",
+                    expected_value="ACTIVE",
+                    evidence_type="GST_CERTIFICATE",
+                    mandatory=True,
+                    severity="CRITICAL",
+                    description="Active GST registration is explicitly required.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
 
-    # 4. Make in India Local Content Threshold
-    lc_match = re.search(r'(?:local content|make in india)[^\d]*(\d+(?:\.\d+)?)\s*%', text)
-    lc_threshold = lc_match.group(1) if lc_match else "50"
-    reqs.append(TenderRequirement(
-        rule_id="RULE-LOCAL-CONTENT",
-        name="Local Content Threshold (MII)",
-        rule_type="PERCENTAGE",
-        field="local_content_percentage",
-        operator="GTE",
-        expected_value=f"{lc_threshold}%",
-        unit="PERCENT",
-        period=None,
-        evidence_type="LOCAL_CONTENT_DECLARATION",
-        mandatory=True,
-        severity="HIGH",
-        description=f"Bidder must meet or exceed {lc_threshold}% local content as per Public Procurement Order."
-    ))
+        # CPPP Debarment
+        cppp_match = re.search(r'([^\.\n]*?(?:debarred|blacklisted|suspended)[^\.\n]*?(?:not|no|declaration)[^\.\n]*)', text, re.I)
+        if cppp_match:
+            source = cppp_match.group(1).strip()
+            if not any(r.rule_id == "RULE-CPPP" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-CPPP",
+                    name="CPPP Debarment Verification",
+                    rule_type="STATUS",
+                    field="debarred",
+                    operator="EQ",
+                    expected_value="False",
+                    evidence_type="CPPP_PORTAL_RECORD",
+                    mandatory=True,
+                    severity="CRITICAL",
+                    description="Bidder must not be debarred.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
 
-    # 5. OEM Authorization
-    reqs.append(TenderRequirement(
-        rule_id="RULE-OEM",
-        name="OEM Manufacturer Authorization",
-        rule_type="DOCUMENT_PRESENCE",
-        field="oem_authorization",
-        operator="VALID",
-        expected_value="VALID_AUTHORIZATION",
-        unit=None,
-        period=None,
-        evidence_type="OEM_AUTHORIZATION_LETTER",
-        mandatory=True,
-        severity="HIGH",
-        description="Authentic manufacturer authorization issued explicitly to the bidding entity."
-    ))
-
-    # Additional detected requirements (e.g. Udyam MSME, Warranty)
-    if "udyam" in text or "msme" in text:
-        reqs.append(TenderRequirement(
-            rule_id="RULE-UDYAM",
-            name="Udyam MSME Registration",
-            rule_type="STATUS",
-            field="udyam_registration",
-            operator="VALID",
-            expected_value="VALID",
-            unit=None,
-            period=None,
-            evidence_type="UDYAM_CERTIFICATE",
-            mandatory=False,
-            severity="MEDIUM",
-            description="Valid MSME certificate for preferential evaluation under procurement policy."
-        ))
+        # OEM Authorization
+        oem_match = re.search(r'([^\.\n]*?(?:oem authorization|manufacturer authorization|dealer authorization)[^\.\n]*)', text, re.I)
+        if oem_match:
+            source = oem_match.group(1).strip()
+            mandatory = not ("optional" in source.lower() or "if applicable" in source.lower())
+            if not any(r.rule_id == "RULE-OEM" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-OEM",
+                    name="OEM Manufacturer Authorization",
+                    rule_type="DOCUMENT_PRESENCE",
+                    field="oem_authorization",
+                    operator="VALID",
+                    expected_value="VALID_AUTHORIZATION",
+                    evidence_type="OEM_AUTHORIZATION_LETTER",
+                    mandatory=mandatory,
+                    severity="HIGH" if mandatory else "LOW",
+                    description="Manufacturer authorization.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
+                
+        # Satisfactory Execution
+        exec_match = re.search(r'([^\.\n]*?(?:satisfactorily executed|past performance|past experience)[^\.\n]*?(?:20%|30%|40%|50%)[^\.\n]*)', text, re.I)
+        if exec_match:
+            source = exec_match.group(1).strip()
+            if not any(r.rule_id == "RULE-EXECUTION" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-EXECUTION",
+                    name="Satisfactory Past Execution",
+                    rule_type="TEXT",
+                    field="past_performance",
+                    operator="VALID",
+                    expected_value="VERIFIED",
+                    evidence_type="PURCHASE_ORDER_COPIES",
+                    mandatory=True,
+                    severity="HIGH",
+                    description="Past performance execution criteria.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
+                
+        # HSN Code
+        hsn_match = re.search(r'([^\.\n]*?(?:hsn code)[^\.\n]*)', text, re.I)
+        if hsn_match:
+            source = hsn_match.group(1).strip()
+            if not any(r.rule_id == "RULE-HSN" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-HSN",
+                    name="HSN Code Compliance",
+                    rule_type="TEXT",
+                    field="hsn_code",
+                    operator="VALID",
+                    expected_value="VALID",
+                    evidence_type="DOCUMENT",
+                    mandatory=True,
+                    severity="MEDIUM",
+                    description="HSN Code requirement.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
+                
+        # Udyam / MSME
+        msme_match = re.search(r'([^\.\n]*?(?:udyam|msme)[^\.\n]*)', text, re.I)
+        if msme_match:
+            source = msme_match.group(1).strip()
+            mandatory = "mandatory" in source.lower()
+            if not any(r.rule_id == "RULE-UDYAM" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-UDYAM",
+                    name="Udyam MSME Registration",
+                    rule_type="STATUS",
+                    field="udyam_registration",
+                    operator="VALID",
+                    expected_value="VALID",
+                    evidence_type="UDYAM_CERTIFICATE",
+                    mandatory=mandatory,
+                    severity="MEDIUM",
+                    description="MSME certificate.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
+                
+        # BLW / Approved Sources
+        blw_match = re.search(r'([^\.\n]*?(?:blw|approved sources?|rdso)[^\.\n]*)', text, re.I)
+        if blw_match:
+            source = blw_match.group(1).strip()
+            if not any(r.rule_id == "RULE-APPROVED-SOURCE" for r in reqs):
+                reqs.append(TenderRequirement(
+                    rule_id="RULE-APPROVED-SOURCE",
+                    name="Approved Source (BLW/RDSO)",
+                    rule_type="STATUS",
+                    field="approved_source",
+                    operator="VALID",
+                    expected_value="VERIFIED",
+                    evidence_type="VENDOR_APPROVAL_CERTIFICATE",
+                    mandatory=True,
+                    severity="CRITICAL",
+                    description="Must be an approved source.",
+                    source_page=page.page_number,
+                    source_text=source
+                ))
 
     return ExtractionResponse(
         tender_id=payload.tender_id,
         model_name=MODEL_NAME,
         model_version=MODEL_VERSION,
         inference_timestamp=datetime.now(timezone.utc).isoformat(),
-        requirements=reqs
+        requirements=reqs,
+        tender_details=details
     )
 
 if __name__ == "__main__":

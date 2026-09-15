@@ -23,9 +23,25 @@ export interface Bidder {
   reviewer_note?: string | null; reviewed_at?: string | null;
   documents: DocumentRecord[]; rules: RuleResult[];
 }
+export interface TenderRequirement {
+  id: string; tender_id: string; rule_id: string; name: string;
+  rule_type: string; field: string; operator: string;
+  expected_value: string; unit?: string | null; period?: string | null;
+  evidence_type: string; mandatory: boolean; severity: string;
+  description: string; source_page?: number | null;
+  source_text?: string | null; confidence?: number | null;
+  status: string;
+}
+
 export interface Tender {
   id: string; title: string; department: string; published: string;
   deadline: string; budget: string; status: string; bids: Bidder[];
+  requirements?: TenderRequirement[]; documents?: DocumentRecord[];
+  tender_number?: string | null;
+  quantity?: string | null;
+  delivery_period?: string | null;
+  warranty?: string | null;
+  emd?: string | null;
 }
 export type TenderCreate = Pick<Tender, "title" | "department" | "deadline" | "budget">;
 export interface AuditEvent {

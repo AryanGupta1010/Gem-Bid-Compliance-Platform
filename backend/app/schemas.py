@@ -117,7 +117,41 @@ class TenderResponse(BaseModel):
     deadline: str
     budget: str
     status: str
+    tender_number: Optional[str] = None
+    quantity: Optional[str] = None
+    delivery_period: Optional[str] = None
+    warranty: Optional[str] = None
+    emd: Optional[str] = None
     bids: List[BidResponse] = []
+    requirements: List["TenderRequirementResponse"] = []
+    documents: List[DocumentResponse] = []
+
+    class Config:
+        from_attributes = True
+
+# ── Tender Requirement ──────────────────────────────────────────────────
+
+class TenderRequirementSchema(BaseModel):
+    rule_id: str
+    name: str
+    rule_type: str
+    field: str
+    operator: str
+    expected_value: str
+    unit: Optional[str] = None
+    period: Optional[str] = None
+    evidence_type: str
+    mandatory: bool = True
+    severity: str = "HIGH"
+    description: str
+
+class TenderRequirementResponse(TenderRequirementSchema):
+    id: str
+    tender_id: str
+    source_page: Optional[int] = None
+    source_text: Optional[str] = None
+    confidence: Optional[float] = None
+    status: str
 
     class Config:
         from_attributes = True

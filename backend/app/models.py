@@ -29,7 +29,17 @@ class Tender(Base):
     deadline = Column(String)
     budget = Column(String)
     status = Column(String)
+    
+    # Dynamically Extracted Details
+    tender_number = Column(String, nullable=True)
+    quantity = Column(String, nullable=True)
+    delivery_period = Column(String, nullable=True)
+    warranty = Column(String, nullable=True)
+    emd = Column(String, nullable=True)
+    
     bids = relationship("Bid", back_populates="tender")
+    requirements = relationship("TenderRequirement", back_populates="tender", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="tender", order_by="Document.uploaded_at.desc()")
 
 class Bid(Base):
     __tablename__ = "bids"
@@ -58,7 +68,8 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    bid_id = Column(String, ForeignKey("bids.id"))
+    bid_id = Column(String, ForeignKey("bids.id"), nullable=True)
+    tender_id = Column(String, ForeignKey("tenders.id"), nullable=True)
     filename = Column(String, nullable=False)
     mime_type = Column(String, default="application/pdf")
     size_bytes = Column(BigInteger, default=0)
@@ -70,6 +81,7 @@ class Document(Base):
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     bid = relationship("Bid", back_populates="documents")
+    tender = relationship("Tender", back_populates="documents")
     pages = relationship("PageImage", back_populates="document")
 
 class PageImage(Base):
@@ -107,6 +119,30 @@ class RuleResult(Base):
     rule_version = Column(String)
 
     bid = relationship("Bid", back_populates="rules")
+
+class TenderRequirement(Base):
+    __tablename__ = "tender_requirements"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    tender_id = Column(String, ForeignKey("tenders.id"))
+    rule_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    rule_type = Column(String)
+    field = Column(String)
+    operator = Column(String)
+    expected_value = Column(String)
+    unit = Column(String)
+    period = Column(String)
+    evidence_type = Column(String)
+    mandatory = Column(Boolean, default=True)
+    severity = Column(String)
+    description = Column(String)
+    source_page = Column(Integer)
+    source_text = Column(String)
+    confidence = Column(Float)
+    status = Column(String, default="pending")  # pending / approved / rejected
+
+    tender = relationship("Tender", back_populates="requirements")
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
