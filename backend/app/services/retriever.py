@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class VisualRetriever:
     """Interface for visual document retrieval models."""
     def retrieve(self, document_id: str, document_hash: str, rule_id: str,
-                 page_count: int = 7) -> Dict[str, Any]:
+                 page_count: int = 7, requirement_name: str = "", requirement_field: str = "") -> Dict[str, Any]:
         raise NotImplementedError
 
     def index_document(self, document_id: str) -> Dict[str, Any]:
@@ -83,9 +83,9 @@ class ColPaliRetriever(VisualRetriever):
             db.close()
 
     def retrieve(self, document_id: str, document_hash: str, rule_id: str,
-                 page_count: int = 7) -> Dict[str, Any]:
+                 page_count: int = 7, requirement_name: str = "", requirement_field: str = "") -> Dict[str, Any]:
         # Generate semantic retrieval query from rule definition
-        req_spec = {"rule_id": rule_id}
+        req_spec = {"rule_id": rule_id, "name": requirement_name, "field": requirement_field}
         retrieval_query = self.query_gen.generate_query(req_spec)
 
         try:
@@ -153,7 +153,7 @@ class TextRetriever(VisualRetriever):
         return blocks
 
     def retrieve(self, document_id: str, document_hash: str, rule_id: str,
-                 page_count: int = 7) -> Dict[str, Any]:
+                 page_count: int = 7, requirement_name: str = "", requirement_field: str = "") -> Dict[str, Any]:
         db = SessionLocal()
         try:
             doc = db.query(models.Document).filter(models.Document.id == document_id).first()

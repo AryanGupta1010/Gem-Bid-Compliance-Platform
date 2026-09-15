@@ -100,11 +100,43 @@ class DeterministicEngine:
         if not tender_requirements:
             logger.warning(f"No tender requirements found for tender {tender.id}. Cannot evaluate bid.")
 
+        # Tender/Bid Mismatch Validation
+        if tender.tender_number:
+            ref_ret_data = retriever.retrieve(doc.id, doc.hash_sha3_512, "RULE-TENDER-REF", requirement_name="Tender Reference Number", requirement_field="reference_number", page_count=page_count)
+            ref_ocr_data = ocr_service.extract_field(
+                doc.id, doc.hash_sha3_512,
+                bounding_box=ref_ret_data["bounding_box"],
+                field_type="reference_number",
+                page_number=ref_ret_data["page_number"],
+                gstin=bid.gstin,
+                rule_id="RULE-TENDER-REF",
+                bidder_hint=bid.bidder_name
+            )
+            extracted_ref = ref_ocr_data.get("extracted_value", "")
+            
+            # Skip if it's the demo mock fallback which doesn't contain a real reference
+            if extracted_ref and not extracted_ref.startswith("[Test OCR"):
+                if tender.tender_number.lower() not in extracted_ref.lower():
+                    bid.status = "REVIEW"
+                    bid.risk = "HIGH"
+                    bid.summary = f"DOCUMENT MISMATCH: The Bid document does not appear to correspond to Tender {tender.tender_number}. Found reference: '{extracted_ref}'."
+                    self.db.add(models.AuditEvent(
+                        time=datetime.now(timezone.utc).isoformat(),
+                        actor="System (Validation)",
+                        action="Tender/Bid Mismatch detected",
+                        document=doc.filename,
+                        hash=doc.hash_sha3_512,
+                        result="FAILED",
+                        source=f"bid:{bid.id}"
+                    ))
+                    self.db.commit()
+                    return bid
+
         for req in tender_requirements:
             rule_id = req.rule_id
             
             # Common retrieval & extraction logic
-            ret_data = retriever.retrieve(doc.id, doc.hash_sha3_512, req.description, page_count=page_count)
+            ret_data = retriever.retrieve(doc.id, doc.hash_sha3_512, req.rule_id, page_count=page_count, requirement_name=req.name, requirement_field=req.field)
             ocr_data = ocr_service.extract_field(
                 doc.id, doc.hash_sha3_512,
                 bounding_box=ret_data["bounding_box"],

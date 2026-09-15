@@ -106,18 +106,21 @@ class DemoOCR(OCRService):
         ("27AADCB2230M1Z2", "RULE-CPPP"): {"extracted_value": "CPPP Verification: No debarment record found. Status: Active and Compliant", "confidence": 1.0},
         ("27AADCB2230M1Z2", "RULE-LOCAL-CONTENT"): {"extracted_value": "Make in India Certificate: Local Content is 62% Class-I Local Supplier", "confidence": 0.95},
         ("27AADCB2230M1Z2", "RULE-OEM"): {"extracted_value": "Manufacturer Authorization: We hereby authorize TechNova Systems Pvt. Ltd. to supply", "confidence": 0.94},
+        ("27AADCB2230M1Z2", "RULE-TENDER-REF"): {"extracted_value": "Tender Reference: GEM/2026/B/123456", "confidence": 0.99},
 
         ("07BBPCA1120K1Z1", "RULE-TURNOVER"): {"extracted_value": "Audited Annual Turnover Financial Year 2023-24: ₹8.5 Crore", "confidence": 0.93},
         ("07BBPCA1120K1Z1", "RULE-GST"): {"extracted_value": "GST Registration Certificate GSTIN: 07BBPCA1120K1Z1 Legal Name: Apex Industrial Solutions", "confidence": 0.96},
         ("07BBPCA1120K1Z1", "RULE-CPPP"): {"extracted_value": "CPPP Debarment Verification: Debarment match found for Apex Industrial Solutions", "confidence": 1.0},
         ("07BBPCA1120K1Z1", "RULE-LOCAL-CONTENT"): {"extracted_value": "Local Content Declaration: 31% Class-II Supplier", "confidence": 0.91},
         ("07BBPCA1120K1Z1", "RULE-OEM"): {"extracted_value": "Manufacturer Authorization: We hereby authorize Apex Core Technologies to supply", "confidence": 0.88},
+        ("07BBPCA1120K1Z1", "RULE-TENDER-REF"): {"extracted_value": "Tender Reference: GEM/2026/B/123456", "confidence": 0.99},
 
         ("29CCPMD3340L1Z3", "RULE-TURNOVER"): {"extracted_value": "Audited Annual Turnover Financial Year 2023-24: ₹11.4 Crore", "confidence": 0.89},
         ("29CCPMD3340L1Z3", "RULE-GST"): {"extracted_value": "GST Certificate scan: unreadable smudged characters 29CCPMD????L1Z?", "confidence": 0.42},
         ("29CCPMD3340L1Z3", "RULE-CPPP"): {"extracted_value": "CPPP Verification: No debarment record found. Status: Active and Compliant", "confidence": 1.0},
         ("29CCPMD3340L1Z3", "RULE-LOCAL-CONTENT"): {"extracted_value": "Local Content Declaration: conflicting certificate stating 48% and 52% in separate annexures", "confidence": 0.55},
         ("29CCPMD3340L1Z3", "RULE-OEM"): {"extracted_value": "Manufacturer Authorization: We hereby authorize MedCore Technologies Pvt. Ltd. to supply", "confidence": 0.92},
+        ("29CCPMD3340L1Z3", "RULE-TENDER-REF"): {"extracted_value": "Tender Reference: GEM/2026/B/123456", "confidence": 0.99},
     }
 
     def extract_field(self, document_id: str, document_hash: str,

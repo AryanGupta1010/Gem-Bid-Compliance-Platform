@@ -44,6 +44,9 @@ class RuleQueryGenerator(QueryGenerator):
         elif rule_id == "RULE-UDYAM" or "udyam" in field.lower() or "msme" in field.lower():
             query_text = "Udyam registration certificate MSME enterprise category micro small medium"
             target_evidence = "udyam_certificate"
+        elif rule_id == "RULE-TENDER-REF" or "reference" in field.lower():
+            query_text = "GeM Bid Number Tender Reference Number NIT ID procurement reference"
+            target_evidence = "reference_number"
         else:
             query_text = f"bidder evidence verification for requirement {rule_id} {requirement.get('name', '')}"
             target_evidence = evidence_type
