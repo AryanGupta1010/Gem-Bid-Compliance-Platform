@@ -3,23 +3,36 @@ import time
 import requests
 
 API_URL = "http://localhost:8000"
+TOKEN = None
+
+def login():
+    global TOKEN
+    resp = requests.post(f"{API_URL}/auth/login", json={"username": "officer1", "password": "ProcureGuard@2026"})
+    resp.raise_for_status()
+    TOKEN = resp.json()["access_token"]
+    print("Logged in successfully.")
+
+def get_headers():
+    if not TOKEN:
+        login()
+    return {"Authorization": f"Bearer {TOKEN}"}
 
 def get_bids():
-    resp = requests.get(f"{API_URL}/bids")
+    resp = requests.get(f"{API_URL}/bids", headers=get_headers())
     resp.raise_for_status()
     return resp.json()
 
 def upload_document(bid_id, filepath):
     with open(filepath, "rb") as f:
         files = {"file": (os.path.basename(filepath), f, "application/pdf")}
-        resp = requests.post(f"{API_URL}/upload/{bid_id}", files=files)
+        resp = requests.post(f"{API_URL}/upload/{bid_id}", files=files, headers=get_headers())
         resp.raise_for_status()
         return resp.json()
 
 def wait_for_processing(bid_id, doc_id, timeout=60):
     start = time.time()
     while time.time() - start < timeout:
-        resp = requests.get(f"{API_URL}/bids/{bid_id}/status")
+        resp = requests.get(f"{API_URL}/bids/{bid_id}/status", headers=get_headers())
         resp.raise_for_status()
         data = resp.json()
         
@@ -71,7 +84,7 @@ def test_golden_demo():
                 print(f"Final Processing Stage: {stage}")
                 
                 # Refetch bid to get full details
-                bid_resp = requests.get(f"{API_URL}/bids/{bid_id}")
+                bid_resp = requests.get(f"{API_URL}/bids/{bid_id}", headers=get_headers())
                 bid_full = bid_resp.json()
                 
                 print(f"Result Status: {bid_full.get('status')} | Risk: {bid_full.get('risk')} | Score: {bid_full.get('score')}")

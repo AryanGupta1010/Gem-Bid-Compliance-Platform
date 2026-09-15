@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, ForeignKey, DateTime, Text, JSON, BigInteger
+from sqlalchemy import Column, String, Integer, Float, ForeignKey, DateTime, Text, JSON, BigInteger, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import uuid
@@ -6,6 +6,18 @@ from app.database import Base
 
 def generate_uuid():
     return str(uuid.uuid4())
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    username = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, unique=True, nullable=True)
+    hashed_password = Column(String, nullable=False)
+    full_name = Column(String, default="")
+    role = Column(String, default="PROCUREMENT_OFFICER")  # PROCUREMENT_OFFICER, ADMIN, REVIEWER, AUDITOR
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Tender(Base):
     __tablename__ = "tenders"
@@ -53,7 +65,7 @@ class Document(Base):
     hash_sha3_512 = Column(String, nullable=False)
     minio_path = Column(String, nullable=False)
     status = Column(String, default="uploaded")           # uploaded / processing / completed / error
-    processing_stage = Column(String, default="UPLOAD")   # current pipeline stage
+    processing_stage = Column(String, default="UPLOAD")   # UPLOAD / HASH / RENDER / INDEX / EVALUATE / HUMAN_REVIEW / FAILED
     page_count = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

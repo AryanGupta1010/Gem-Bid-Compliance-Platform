@@ -2,6 +2,12 @@ from datetime import date
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal
 
+# ── Auth ──────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=200)
+
 # ── Document ──────────────────────────────────────────────────────────
 
 class DocumentResponse(BaseModel):

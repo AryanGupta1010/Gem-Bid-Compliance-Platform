@@ -1,24 +1,38 @@
-version: '3.8'
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    container_name: procureguard-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: procureguard
       POSTGRES_PASSWORD: password123
       POSTGRES_DB: procureguard_db
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U procureguard -d procureguard_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
+    container_name: procureguard-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   minio:
-    image: minio/minio
+    image: quay.io/minio/minio:latest
+    container_name: procureguard-minio
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: admin
@@ -28,28 +42,174 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # NOTE: Backend and frontend can be run via this docker-compose or locally using python/npm.
-  # For development, we run them locally to easily see logs and restart.
+  # ColPali Visual Document Retrieval Service
+  colpali:
+    build:
+      context: ./backend
+      dockerfile: model_services/colpali/Dockerfile
+    container_name: procureguard-colpali
+    restart: unless-stopped
+    environment:
+      - PORT=8002
+      - MODEL_NAME=vidore/colpali-v1.2
+      - DEVICE=cuda
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Surya Targeted OCR Service
+  surya:
+    build:
+      context: ./backend
+      dockerfile: model_services/surya/Dockerfile
+    container_name: procureguard-surya
+    restart: unless-stopped
+    environment:
+      - PORT=8003
+      - DEVICE=cuda
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Saul Requirement Extraction Service
+  saul:
+    build:
+      context: ./backend
+      dockerfile: model_services/saul/Dockerfile
+    container_name: procureguard-saul
+    restart: unless-stopped
+    environment:
+      - PORT=8004
+      - MODEL_NAME=Equall/Saul-7B-Instruct
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8004/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # NLI Contextual Reasoning Service
+  nli:
+    build:
+      context: ./backend
+      dockerfile: model_services/nli/Dockerfile
+    container_name: procureguard-nli
+    restart: unless-stopped
+    environment:
+      - PORT=8005
+      - MODEL_NAME=cross-encoder/nli-deberta-v3-base
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Government API Connector Mock Fixture Server
+  gov-api:
+    build:
+      context: ./backend
+      dockerfile: gov_api/Dockerfile
+    container_name: procureguard-gov-api
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+
+  # Core Backend Orchestrator
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: procureguard-backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
       - ./backend/.env
+    environment:
+      - DATABASE_URL=postgresql://procureguard:password123@postgres:5432/procureguard_db
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - COLPALI_URL=http://colpali:8002
+      - SURYA_URL=http://surya:8003
+      - SAUL_URL=http://saul:8004
+      - NLI_URL=http://nli:8005
+      - GST_API_URL=http://gov-api:8001/api/v1/gstin
+      - CPPP_API_URL=http://gov-api:8001/api/v1/cppp/status
     depends_on:
-      - postgres
-      - redis
-      - minio
-  
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      colpali:
+        condition: service_healthy
+      surya:
+        condition: service_healthy
+      saul:
+        condition: service_healthy
+      nli:
+        condition: service_healthy
+
+  # Background RQ Worker
   rq-worker:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: procureguard-worker
+    restart: unless-stopped
     command: python worker.py
     env_file:
       - ./backend/.env
+    environment:
+      - DATABASE_URL=postgresql://procureguard:password123@postgres:5432/procureguard_db
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - COLPALI_URL=http://colpali:8002
+      - SURYA_URL=http://surya:8003
+      - SAUL_URL=http://saul:8004
+      - NLI_URL=http://nli:8005
+      - GST_API_URL=http://gov-api:8001/api/v1/gstin
+      - CPPP_API_URL=http://gov-api:8001/api/v1/cppp/status
     depends_on:
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: procureguard-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - API_BASE_URL=http://backend:8000
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

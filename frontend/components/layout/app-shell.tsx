@@ -1,4 +1,5 @@
 "use client";
+import Cookies from "js-cookie";
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -95,11 +96,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Activity size={16} className="text-teal" />
             <span>GeM Evaluation Workspace</span>
             <span className="text-slate-300">/</span>
-            <span className="font-medium text-ink">Procurement Officer</span>
+            <span className="font-medium text-ink">{Cookies.get("username") || "Procurement Officer"}</span>
           </div>
           <div className="flex items-center gap-3">
             <Link href="/tenders" className="btn btn-secondary"><Search size={15} /> Find a tender</Link>
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy text-sm font-bold text-white">PO</div>
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy text-sm font-bold text-white" title={Cookies.get("username") || "User"}>
+              {(Cookies.get("username") || "PO").substring(0, 2).toUpperCase()}
+            </div>
+            <button 
+              className="text-sm text-red-600 hover:underline"
+              onClick={() => {
+                Cookies.remove("token");
+                Cookies.remove("role");
+                Cookies.remove("username");
+                router.push("/login");
+              }}
+            >
+              Logout
+            </button>
           </div>
         </header>
         <main className="mx-auto max-w-[1600px] p-5 lg:p-8">{children}</main>

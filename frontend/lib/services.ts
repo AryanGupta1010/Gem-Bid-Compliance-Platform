@@ -1,17 +1,55 @@
-import type { AuditEvent, Bidder, BidStatus, Capabilities, DocumentRecord, Tender, TenderCreate } from "./types";
+import type { AuditEvent, Bidder, BidStatus, Capabilities, DocumentRecord, Tender, TenderCreate, AuthResponse, LoginCredentials } from "./types";
 
 class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
-const base = () => typeof window === "undefined"
-  ? (process.env.API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "")
-  : "/api";
+const base = () => {
+  if (typeof window === "undefined") {
+    return (process.env.API_BASE_URL || "http://backend:8000").replace(/\/$/, "");
+  }
+  return "/api";
+};
+
 export const apiUrl = (path: string) => `${base()}${path}`;
+
+const getToken = () => {
+  if (typeof window !== "undefined") {
+    const m = document.cookie.match(/(^| )token=([^;]+)/);
+    return m ? m[2] : null;
+  }
+  try {
+    const { cookies } = require("next/headers");
+    return cookies().get("token")?.value || null;
+  } catch (e) {
+    return null;
+  }
+};
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60000);
+  
+  const headers = new Headers(init.headers || {});
+  const token = getToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
   try {
-    const response = await fetch(apiUrl(path), { ...init, cache: "no-store", signal: controller.signal });
+    let response = await fetch(apiUrl(path), { ...init, headers, cache: "no-store", signal: controller.signal });
+    
+    // In browser, if /api rewrite returns 500/502/failed, attempt direct connection to localhost:8000
+    if (!response.ok && typeof window !== "undefined" && (response.status === 500 || response.status === 502 || response.status === 504)) {
+      try {
+        const directResp = await fetch(`http://localhost:8000${path}`, { ...init, headers, cache: "no-store", signal: controller.signal });
+        if (directResp.ok) {
+          return await directResp.json() as T;
+        }
+      } catch (directErr) {
+        // Continue with original response error
+      }
+    }
+
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       const detail = body?.detail;
@@ -23,7 +61,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     return await response.json() as T;
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    throw new Error("The backend is unavailable or the request timed out. Check services and retry.");
+    throw new Error((error as any)?.message || "The backend is unavailable or the request timed out. Check services and retry.");
   } finally { clearTimeout(timer); }
 }
 const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -32,6 +70,7 @@ async function optional<T>(path: string): Promise<T | null> {
   catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
 }
 export const services = {
+  login: (credentials: LoginCredentials) => request<AuthResponse>("/auth/login", json(credentials)),
   getAllTenders: () => request<Tender[]>("/tenders"),
   getTender: (id: string) => optional<Tender>(`/tenders/${encodeURIComponent(id)}`),
   createTender: (data: TenderCreate) => request<Tender>("/tenders", json(data)),

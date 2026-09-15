@@ -1,18 +1,37 @@
+"""
+RQ Background Worker Processing Pipeline.
+
+Stages:
+  1. HASH: Validate SHA3-512 integrity
+  2. RENDER: Render PDF pages to images via PyMuPDF and store in MinIO
+  3. INDEX: Generate and persist ColPali visual embeddings
+  4. EVALUATE: Targeted OCR, field extraction, NLI reasoning, rule verification
+  5. HUMAN_REVIEW: Evaluation complete; awaiting Procurement Officer decision
+"""
 import hashlib
 import logging
 from datetime import datetime, timezone
+
 from app import models
 from app.database import SessionLocal
 from app.storage import minio_client
 from app.services.renderer import PDFRenderer
+from app.services.retriever import get_retriever
+from app.services.exceptions import AIModelUnavailableError
 
 logger = logging.getLogger(__name__)
 
-def _update_stage(db, doc, stage, action):
+def _update_stage(db, doc, stage, action, result="IN_PROGRESS"):
     doc.processing_stage = stage
-    db.add(models.AuditEvent(time=datetime.now(timezone.utc).isoformat(),
-        actor="System (Pipeline)", action=action, document=doc.filename,
-        hash=doc.hash_sha3_512, result="IN_PROGRESS", source=f"bid:{doc.bid_id}"))
+    db.add(models.AuditEvent(
+        time=datetime.now(timezone.utc).isoformat(),
+        actor="System (AI Pipeline)",
+        action=action,
+        document=doc.filename,
+        hash=doc.hash_sha3_512,
+        result=result,
+        source=f"bid:{doc.bid_id}"
+    ))
     db.commit()
 
 def process_document_pipeline(document_id: str):
@@ -22,38 +41,89 @@ def process_document_pipeline(document_id: str):
         if not doc or doc.status == "completed":
             return
         doc.status = "processing"
-        _update_stage(db, doc, "HASH", "Checking stored document hash")
+        
+        # 1. HASH Verification
+        _update_stage(db, doc, "HASH", "Verifying SHA3-512 document cryptographic seal")
         pdf_bytes = minio_client.download_file_bytes(doc.minio_path)
-        if hashlib.sha3_512(pdf_bytes).hexdigest() != doc.hash_sha3_512:
-            raise ValueError("Stored document does not match upload hash")
-        _update_stage(db, doc, "RENDER", "Rendering PDF pages")
+        actual_hash = hashlib.sha3_512(pdf_bytes).hexdigest()
+        if actual_hash != doc.hash_sha3_512:
+            raise ValueError(f"Document tamper detected: hash mismatch {actual_hash} != {doc.hash_sha3_512}")
+
+        # 2. RENDER PDF Pages
+        _update_stage(db, doc, "RENDER", "Rendering PDF pages to visual images (PyMuPDF)")
         records = PDFRenderer().render_document_with_metadata(document_id, pdf_bytes)
         if not records:
             raise ValueError("PDF has no renderable pages")
+        
         db.query(models.PageImage).filter(models.PageImage.document_id == document_id).delete(synchronize_session=False)
         for record in records:
             db.add(models.PageImage(document_id=document_id, **record))
         doc.page_count = len(records)
-        _update_stage(db, doc, "EVALUATE", "Retrieving text, extracting fields and evaluating rules")
+        db.commit()
+
+        # 3. INDEX with ColPali
+        _update_stage(db, doc, "INDEX", "Generating ColPali late-interaction visual embeddings")
+        retriever = get_retriever()
+        try:
+            retriever.index_document(document_id)
+        except AIModelUnavailableError as ai_err:
+            logger.error("ColPali indexing failed: %s", ai_err)
+            raise
+
+        # 4. EVALUATE Deterministic Rules & Evidence
+        _update_stage(db, doc, "EVALUATE", "Targeted OCR (Surya), NLI reasoning and deterministic rule evaluation")
         from app.engine import DeterministicEngine
-        if not DeterministicEngine(db).evaluate_document_evidence(document_id):
-            raise ValueError("No evaluation produced")
+        engine = DeterministicEngine(db)
+        if not engine.evaluate_document_evidence(document_id):
+            raise ValueError("Evaluation produced no rule results")
+
+        # 5. HUMAN_REVIEW
         doc.status = "completed"
-        _update_stage(db, doc, "HUMAN_REVIEW", "Evaluation complete; awaiting officer decision")
-    except Exception:
+        _update_stage(db, doc, "HUMAN_REVIEW", "Evaluation complete; awaiting Procurement Officer decision", result="COMPLETED")
+
+    except AIModelUnavailableError as ai_exc:
+        logger.exception("AI Model Service Unavailable for document %s: %s", document_id, ai_exc)
+        db.rollback()
+        doc = db.get(models.Document, document_id)
+        if doc:
+            doc.status = "error"
+            doc.processing_stage = "FAILED"
+            if doc.bid and doc.bid.status != "FAIL":
+                doc.bid.status = "REVIEW"
+                doc.bid.risk = "HIGH"
+            doc.bid.summary = f"AI Evaluation Failed: {ai_exc.message}. No mock fallback was applied in production mode."
+            db.add(models.AuditEvent(
+                time=datetime.now(timezone.utc).isoformat(),
+                actor="System (AI Service Failure)",
+                action=f"Processing halted: {ai_exc.service_name.upper()} model service unavailable",
+                document=doc.filename,
+                hash=doc.hash_sha3_512,
+                result="AI_SERVICE_UNAVAILABLE",
+                source=f"bid:{doc.bid_id}"
+            ))
+            db.commit()
+        raise
+    except Exception as exc:
         logger.exception("Document processing failed: %s", document_id)
         db.rollback()
         doc = db.get(models.Document, document_id)
         if doc:
-            doc.status, doc.processing_stage = "error", "FAILED"
-            if doc.bid.status != "FAIL":
-                doc.bid.status, doc.bid.risk = "REVIEW", "MEDIUM"
-            doc.bid.summary = "Package processing failed. Prior rules may be historical; no final decision is available."
-            db.add(models.AuditEvent(time=datetime.now(timezone.utc).isoformat(),
-                actor="System (Pipeline Error)", action="Processing failed; check worker logs and re-upload",
-                document=doc.filename, hash=doc.hash_sha3_512, result="UNAVAILABLE", source=f"bid:{doc.bid_id}"))
+            doc.status = "error"
+            doc.processing_stage = "FAILED"
+            if doc.bid and doc.bid.status != "FAIL":
+                doc.bid.status = "REVIEW"
+                doc.bid.risk = "MEDIUM"
+            doc.bid.summary = f"Processing error: {str(exc)}"
+            db.add(models.AuditEvent(
+                time=datetime.now(timezone.utc).isoformat(),
+                actor="System (Pipeline Error)",
+                action=f"Processing error: {str(exc)}",
+                document=doc.filename,
+                hash=doc.hash_sha3_512,
+                result="FAILED",
+                source=f"bid:{doc.bid_id}"
+            ))
             db.commit()
         raise
     finally:
         db.close()
-

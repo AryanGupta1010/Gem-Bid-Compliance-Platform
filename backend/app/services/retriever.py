@@ -1,23 +1,130 @@
-import hashlib
-from typing import Dict, Any, List
+"""
+Visual Document Retrieval Service (ColPali).
+
+CRITICAL RULE: NO SILENT AI FALLBACKS IN LIVE MODE.
+In AI_MODE=live, ColPali must run against the ColPali model service.
+If the service is unavailable, it raises AIModelUnavailableError.
+"""
 import io
 import re
-import pymupdf
-import pytesseract
+import logging
+import requests
+from typing import Dict, Any, List
+from datetime import datetime, timezone
 from PIL import Image
+import pymupdf
 
 from app.config import settings
 from app.storage import minio_client
 from app.database import SessionLocal
 from app import models
+from app.services.exceptions import AIModelUnavailableError
+from app.services.query_generator import get_query_generator
+
+logger = logging.getLogger(__name__)
 
 class VisualRetriever:
-    """Interface for visual document retrieval models (e.g. ColPali)."""
+    """Interface for visual document retrieval models."""
     def retrieve(self, document_id: str, document_hash: str, rule_id: str,
                  page_count: int = 7) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def index_document(self, document_id: str) -> Dict[str, Any]:
+        raise NotImplementedError
+
+class ColPaliRetriever(VisualRetriever):
+    """
+    Real ColPali visual retrieval via dedicated microservice.
+    Uses late-interaction multi-vector visual retrieval.
+    """
+    def __init__(self):
+        self.endpoint = settings.COLPALI_URL
+        self.query_gen = get_query_generator()
+
+    def index_document(self, document_id: str) -> Dict[str, Any]:
+        """Index rendered page images in the ColPali service."""
+        db = SessionLocal()
+        try:
+            doc = db.query(models.Document).filter(models.Document.id == document_id).first()
+            if not doc:
+                raise ValueError("Document not found")
+            pages = db.query(models.PageImage).filter(models.PageImage.document_id == document_id).order_by(models.PageImage.page_number).all()
+            
+            payload_pages = []
+            for p in pages:
+                img_b64 = None
+                text_content = None
+                if p.minio_path:
+                    try:
+                        img_bytes = minio_client.download_file_bytes(p.minio_path, bucket=settings.MINIO_PAGES_BUCKET)
+                        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                    except Exception:
+                        pass
+                
+                payload_pages.append({
+                    "page_number": p.page_number,
+                    "image_base64": img_b64,
+                    "width": p.width or 595,
+                    "height": p.height or 842,
+                    "text_content": text_content
+                })
+
+            resp = requests.post(
+                f"{self.endpoint}/embed-pages",
+                json={"document_id": document_id, "pages": payload_pages},
+                timeout=settings.MODEL_TIMEOUT
+            )
+            if resp.status_code != 200:
+                raise AIModelUnavailableError("COLPALI", f"Indexing failed with status {resp.status_code}: {resp.text}")
+            return resp.json()
+        except requests.exceptions.RequestException as e:
+            raise AIModelUnavailableError("COLPALI", f"ColPali service unreachable during indexing: {e}")
+        finally:
+            db.close()
+
+    def retrieve(self, document_id: str, document_hash: str, rule_id: str,
+                 page_count: int = 7) -> Dict[str, Any]:
+        # Generate semantic retrieval query from rule definition
+        req_spec = {"rule_id": rule_id}
+        retrieval_query = self.query_gen.generate_query(req_spec)
+
+        try:
+            resp = requests.post(
+                f"{self.endpoint}/search",
+                json={
+                    "document_id": document_id,
+                    "query": retrieval_query.query_text,
+                    "top_k": 1
+                },
+                timeout=settings.MODEL_TIMEOUT
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("results", [])
+                if results:
+                    top = results[0]
+                    return {
+                        "document_id": document_id,
+                        "page_number": top.get("page_number", 1),
+                        "bounding_box": top.get("bounding_box", [0, 0, 0, 0]),
+                        "retrieval_score": top.get("score", 0.95),
+                        "model": top.get("model", "vidore/colpali-v1.2"),
+                        "model_version": top.get("model_version", "1.2.0"),
+                        "inference_timestamp": top.get("inference_timestamp", datetime.now(timezone.utc).isoformat()),
+                        "query_used": retrieval_query.query_text
+                    }
+                raise AIModelUnavailableError("COLPALI", "ColPali returned empty search results.")
+            else:
+                raise AIModelUnavailableError("COLPALI", f"Service returned error HTTP {resp.status_code}: {resp.text}")
+        except requests.exceptions.RequestException as exc:
+            logger.error("ColPali visual retrieval service unavailable: %s", exc)
+            raise AIModelUnavailableError("COLPALI", f"ColPali visual retrieval service is unreachable at {self.endpoint}: {exc}")
+
 class TextRetriever(VisualRetriever):
+    """
+    Test/Unit-test heuristic text retriever.
+    MUST NEVER BE USED IN LIVE PRODUCTION MODE.
+    """
     def __init__(self):
         self.keywords = {
             "RULE-GST": ["gstin", "gst identification", "goods and services tax", "registration"],
@@ -27,25 +134,19 @@ class TextRetriever(VisualRetriever):
             "RULE-OEM": ["oem authorization", "authorized oem", "manufacturer authorization", "authorization letter"]
         }
 
+    def index_document(self, document_id: str) -> Dict[str, Any]:
+        return {"status": "indexed", "method": "heuristic"}
+
     def _extract_blocks(self, doc_bytes: bytes) -> List[Dict]:
         doc = pymupdf.open("pdf", doc_bytes)
         blocks = []
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             text = page.get_text("text").strip()
-            
-            if len(text) < 20: # Fallback to OCR if scanned
-                try:
-                    pix = page.get_pixmap(dpi=150)
-                    img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    text = pytesseract.image_to_string(img).strip()
-                except Exception as e:
-                    pass
-                    
             if text:
                 blocks.append({
                     "page_number": page_num + 1,
-                    "bbox": [0, 0, page.rect.width, page.rect.height],
+                    "bbox": [0, 0, int(page.rect.width), int(page.rect.height)],
                     "text": text,
                     "source": "PyMuPDF Page"
                 })
@@ -53,7 +154,6 @@ class TextRetriever(VisualRetriever):
 
     def retrieve(self, document_id: str, document_hash: str, rule_id: str,
                  page_count: int = 7) -> Dict[str, Any]:
-        
         db = SessionLocal()
         try:
             doc = db.query(models.Document).filter(models.Document.id == document_id).first()
@@ -64,83 +164,43 @@ class TextRetriever(VisualRetriever):
             db.close()
 
         blocks = self._extract_blocks(pdf_bytes)
-        
         rule_keywords = self.keywords.get(rule_id, [])
         best_block = None
         best_score = -1
 
         for block in blocks:
             text_lower = block["text"].lower()
-            score = 0
-            for kw in rule_keywords:
-                if kw in text_lower:
-                    score += 10
-            
+            score = sum(10 for kw in rule_keywords if kw in text_lower)
             if score > 0:
                 score += len(re.findall(r'\d+', text_lower))
-                
             if score > best_score:
                 best_score = score
                 best_block = block
-                
+
         if best_block and best_score > 0:
             return {
                 "document_id": document_id,
                 "page_number": best_block["page_number"],
                 "bounding_box": best_block["bbox"],
-                "retrieved_text": best_block["text"].replace('\n', ' ').strip(),
                 "retrieval_score": round(min(0.5 + (best_score / 50.0), 0.99), 2),
-                "model": f"TextRetriever ({best_block['source']})"
+                "model": "TextRetriever (Test Mode Only)",
+                "model_version": "test-heuristic",
+                "inference_timestamp": datetime.now(timezone.utc).isoformat(),
+                "query_used": f"Keywords: {rule_keywords}"
             }
-        
+
         return {
             "document_id": document_id,
             "page_number": 1,
-            "bounding_box": [0,0,0,0],
-            "retrieved_text": "",
+            "bounding_box": [0, 0, 0, 0],
             "retrieval_score": 0.0,
-            "model": "TextRetriever (No Match)"
+            "model": "TextRetriever (No Match)",
+            "model_version": "test-heuristic",
+            "inference_timestamp": datetime.now(timezone.utc).isoformat(),
+            "query_used": ""
         }
 
-class ColPaliRetriever(TextRetriever):
-    """Real ColPali visual retrieval via external endpoint with fallback."""
-    def retrieve(self, document_id: str, document_hash: str, rule_id: str,
-                 page_count: int = 7) -> Dict[str, Any]:
-        
-        endpoint = settings.MODEL_ENDPOINT
-        if endpoint:
-            try:
-                import requests
-                # Mock sending PDF to endpoint for Visual Retrieval
-                payload = {
-                    "document_id": document_id,
-                    "rule_id": rule_id,
-                    "query": f"Find evidence for rule {rule_id}"
-                }
-                # Use a short timeout so we fallback quickly if no real model server is running
-                resp = requests.post(f"{endpoint}/v1/retrieve", json=payload, timeout=2)
-                
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return {
-                        "document_id": document_id,
-                        "page_number": data.get("page_number", 1),
-                        "bounding_box": data.get("bounding_box", [0,0,0,0]),
-                        "retrieved_text": data.get("retrieved_text", ""),
-                        "retrieval_score": data.get("score", 0.95),
-                        "model": "ColPali-v1.2 (Network API)"
-                    }
-            except Exception as e:
-                # If network fails, fallback to TextRetriever so hackathon demo isn't broken
-                pass
-                
-        # Fallback to the local heuristic implementation
-        result = super().retrieve(document_id, document_hash, rule_id, page_count)
-        result["model"] += " [Network Unavailable Fallback]"
-        return result
-
 def get_retriever() -> VisualRetriever:
-    if settings.AI_MODE == 'real':
+    if settings.AI_MODE == 'live':
         return ColPaliRetriever()
     return TextRetriever()
-

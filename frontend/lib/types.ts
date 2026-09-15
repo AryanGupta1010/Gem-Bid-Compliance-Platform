@@ -42,3 +42,16 @@ export interface Capabilities {
   ai_mode: string; retrieval: string; extraction: string;
   connectors: { name: string; mode: string }[];
 }
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  username: string;
+  role: string;
+  full_name: string;
+}
+
+export interface LoginCredentials {
+  username: string;
+  password: string;
+}

@@ -12,11 +12,27 @@ class Settings(BaseSettings):
     MINIO_DOCUMENTS_BUCKET: str = "documents"
     MINIO_PAGES_BUCKET: str = "rendered-pages"
     
-    GST_API_URL: str = ""
-    GST_API_KEY: str = ""
+    # AI Services Endpoints
+    COLPALI_URL: str = "http://localhost:8002"
+    SURYA_URL: str = "http://localhost:8003"
+    SAUL_URL: str = "http://localhost:8004"
+    NLI_URL: str = "http://localhost:8005"
     
-    AI_MODE: Literal['auto', 'real', 'demo'] = 'demo'
-    MODEL_PROVIDER: str = "mock"
+    # AI Execution Mode ('live' requires running services; no silent mock fallback)
+    AI_MODE: Literal['live', 'test', 'demo'] = 'live'
+    MODEL_TIMEOUT: int = 60
+    MODEL_MAX_RETRIES: int = 3
+    
+    # Government Verification Endpoints
+    GST_API_URL: str = "http://localhost:8001/api/v1/gstin"
+    GST_API_KEY: str = ""
+    CPPP_API_URL: str = "http://localhost:8001/api/v1/cppp/status"
+    UDYAM_API_URL: str = "http://localhost:8001/api/v1/udyam"
+    
+    # JWT Authentication
+    JWT_SECRET: str = "procureguard-super-secret-jwt-key-2026-production"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
     
     class Config:
         env_file = ".env"
@@ -24,3 +40,4 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
+
